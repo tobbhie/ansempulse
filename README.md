@@ -29,6 +29,9 @@ Run it every 1 minute. The bot only posts the public pulse once per hour.
 @BlackBullPulse alert mc above 10m
 @BlackBullPulse alert fdv below 20m
 @BlackBullPulse alert fully diluted valuation above 25m
+@BlackBullPulse alert me when $ANSEM gets to 141m fdv
+@BlackBullPulse alert me when $ANSEM hits 150m market cap
+@BlackBullPulse notify me when $ANSEM reaches 0.20
 @BlackBullPulse alerts
 @BlackBullPulse cancel
 ```
@@ -40,3 +43,4 @@ Run it every 1 minute. The bot only posts the public pulse once per hour.
 - Public price posts are hourly, not every minute.
 - A significant move pulse posts when `$ANSEM` rises at least 20% from the last stored signal baseline.
 - Alerts can target price, market cap, or FDV. Supported short forms include `mcap`, `mc`, and `fdv`.
+- Natural phrases like `gets to`, `hits`, and `reaches` infer `above` or `below` from the current value.

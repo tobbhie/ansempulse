@@ -63,13 +63,16 @@ function compactUsd(num) {
 }
 
 function parseNumericTarget(value, suffix = "") {
-  const number = Number(value);
+  const number = Number(String(value).replace(/,/g, ""));
   const unit = suffix.toLowerCase();
 
   if (!Number.isFinite(number) || number <= 0) return null;
   if (unit === "b" || unit === "bn" || unit === "billion") return number * 1_000_000_000;
+  if (unit === "bil" || unit === "billions") return number * 1_000_000_000;
   if (unit === "m" || unit === "mm" || unit === "million") return number * 1_000_000;
+  if (unit === "mil" || unit === "millions") return number * 1_000_000;
   if (unit === "k" || unit === "thousand") return number * 1_000;
+  if (unit === "thousands") return number * 1_000;
   return number;
 }
 
@@ -94,6 +97,10 @@ function getMarketMetricValue(market, metric) {
   if (metric === "market_cap") return market.marketCap;
   if (metric === "fdv") return market.fdv;
   return market.price;
+}
+
+function inferAlertDirection(currentValue, targetValue) {
+  return targetValue >= currentValue ? "above" : "below";
 }
 
 async function getAnsemPrice() {
@@ -148,21 +155,60 @@ function parseCommand(text) {
     return { type: "cancel_alerts" };
   }
 
-  const alert = clean.match(
-    /(?:alert|notify|ping|call)?\s*(?:me\s*)?(?:when\s*)?(?:it\s*)?(?:is\s*)?(?:(price|market cap|marketcap|mcap|mc|fully diluted valuation|fdv)\s*)?(above|over|breaks above|below|under|breaks below)\s+\$?([0-9]*\.?[0-9]+)\s*(k|m|mm|b|bn|thousand|million|billion)?(?:\s*(price|market cap|marketcap|mcap|mc|fully diluted valuation|fdv))?/
-  );
+  const alertText = clean
+    .replace(/\$?ansem\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (alert) {
-    const rawMetric = alert[1] || alert[5] || "price";
-    const rawDirection = alert[2];
-    const targetValue = parseNumericTarget(alert[3], alert[4]);
+  const hasAlertIntent =
+    /\b(alert|notify|ping|call|watch|track|remind|signal|horn)\b/.test(alertText) ||
+    /\blet me know\b/.test(alertText) ||
+    /\btell me\b/.test(alertText);
+  const targetValue = extractTarget(alertText);
+  const metric = extractMetric(alertText);
+  const direction = extractDirection(alertText);
 
-    if (!targetValue) return { type: "unknown" };
-
+  if (hasAlertIntent && targetValue && direction) {
     return {
       type: "create_alert",
-      metric: parseAlertMetric(rawMetric),
-      direction: rawDirection.includes("below") || rawDirection === "under" ? "below" : "above",
+      metric,
+      direction,
+      targetValue,
+    };
+  }
+
+  const targetPhrase =
+    /\b(gets? to|goes to|moves to|runs to|reaches|hits|touches|breaks|crosses|at|to)\b/.test(
+      alertText
+    ) || /[=:]/.test(alertText);
+
+  if (hasAlertIntent && targetValue && targetPhrase) {
+    return {
+      type: "create_alert",
+      metric,
+      direction: null,
+      targetValue,
+    };
+  }
+
+  if (
+    hasAlertIntent &&
+    targetValue &&
+    /\b(price|market cap|marketcap|mcap|mc|cap|fdv)\b/.test(alertText)
+  ) {
+    return {
+      type: "create_alert",
+      metric,
+      direction: null,
+      targetValue,
+    };
+  }
+
+  if (!hasAlertIntent && targetValue && direction && metric !== "price") {
+    return {
+      type: "create_alert",
+      metric,
+      direction,
       targetValue,
     };
   }
@@ -176,11 +222,55 @@ function parseCommand(text) {
 
 function parseAlertMetric(rawMetric) {
   const clean = rawMetric.replace(/\s+/g, " ").trim().toLowerCase();
-  if (clean === "market cap" || clean === "marketcap" || clean === "mcap" || clean === "mc") {
+  if (
+    clean === "market cap" ||
+    clean === "marketcap" ||
+    clean === "mcap" ||
+    clean === "mc" ||
+    clean === "cap"
+  ) {
     return "market_cap";
   }
   if (clean === "fully diluted valuation" || clean === "fdv") return "fdv";
   return "price";
+}
+
+function extractMetric(text) {
+  const metric = text.match(
+    /\b(fully diluted valuation|market cap|marketcap|mcap|mc|cap|fdv|price)\b/
+  );
+
+  return metric ? parseAlertMetric(metric[1]) : "price";
+}
+
+function extractTarget(text) {
+  const target = text.match(
+    /\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?|\.[0-9]+)\s*(k|m|mm|mil|million|millions|b|bn|bil|billion|billions|thousand|thousands)?\b/
+  );
+
+  if (!target) return null;
+  return parseNumericTarget(target[1], target[2]);
+}
+
+function extractDirection(text) {
+  const direction = text.match(
+    /\b(breaks above|breaks below|crosses above|crosses below|greater than|more than|higher than|less than|lower than|above|over|below|under|exceeds)\b|([<>]=?)/
+  );
+
+  if (!direction) return null;
+
+  const rawDirection = direction[1] || direction[2];
+  if (
+    rawDirection.includes("below") ||
+    rawDirection.includes("less") ||
+    rawDirection.includes("lower") ||
+    rawDirection === "under" ||
+    rawDirection.startsWith("<")
+  ) {
+    return "below";
+  }
+
+  return "above";
 }
 
 async function reply(text, tweetId) {
@@ -244,13 +334,15 @@ async function handleMention(tweet, user, market) {
 
   if (command.type === "create_alert") {
     const currentValue = getMarketMetricValue(market, command.metric);
+    const direction =
+      command.direction || inferAlertDirection(currentValue, command.targetValue);
 
     const { data: existing, error: existingError } = await supabase
       .from("alerts")
       .select("id")
       .eq("x_user_id", user.id)
       .eq("alert_metric", command.metric)
-      .eq("direction", command.direction)
+      .eq("direction", direction)
       .eq("target_price", command.targetValue)
       .eq("triggered", false)
       .maybeSingle();
@@ -260,7 +352,7 @@ async function handleMention(tweet, user, market) {
     if (existing) {
       return reply(
         `Alert already active for @${user.username}.\n\n` +
-          `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+          `$ANSEM ${metricLabel(command.metric)} ${direction} ${formatMetricValue(
             command.metric,
             command.targetValue
           )}\n` +
@@ -274,14 +366,14 @@ async function handleMention(tweet, user, market) {
       x_username: user.username,
       source_tweet_id: tweet.id,
       alert_metric: command.metric,
-      direction: command.direction,
+      direction,
       target_price: command.targetValue,
     });
 
     if (error?.code === "23505") {
       return reply(
         `Alert already active for @${user.username}.\n\n` +
-          `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+          `$ANSEM ${metricLabel(command.metric)} ${direction} ${formatMetricValue(
             command.metric,
             command.targetValue
           )}`,
@@ -293,7 +385,7 @@ async function handleMention(tweet, user, market) {
 
     return reply(
       `Alert set for @${user.username}.\n\n` +
-        `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+        `$ANSEM ${metricLabel(command.metric)} ${direction} ${formatMetricValue(
           command.metric,
           command.targetValue
         )}\n` +
@@ -351,6 +443,7 @@ async function handleMention(tweet, user, market) {
       `@${BOT_USERNAME} alert below 0.08\n` +
       `@${BOT_USERNAME} alert mcap above 10m\n` +
       `@${BOT_USERNAME} alert fdv below 20m\n` +
+      `@${BOT_USERNAME} alert me when $ANSEM gets to $141M fdv\n` +
       `@${BOT_USERNAME} alerts\n` +
       `@${BOT_USERNAME} cancel`,
     tweet.id
