@@ -1,0 +1,14 @@
+{
+  "name": "black-bull-pulse",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check api/tick.js",
+    "deploy": "npx vercel"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "twitter-api-v2": "^1.18.2"
+  }
+}
