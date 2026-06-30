@@ -62,10 +62,38 @@ function compactUsd(num) {
   return `$${value.toFixed(2)}`;
 }
 
+function parseNumericTarget(value, suffix = "") {
+  const number = Number(value);
+  const unit = suffix.toLowerCase();
+
+  if (!Number.isFinite(number) || number <= 0) return null;
+  if (unit === "b" || unit === "bn" || unit === "billion") return number * 1_000_000_000;
+  if (unit === "m" || unit === "mm" || unit === "million") return number * 1_000_000;
+  if (unit === "k" || unit === "thousand") return number * 1_000;
+  return number;
+}
+
 function formatPrice(price) {
   const value = Number(price);
   if (value >= 1) return value.toFixed(4);
   return value.toFixed(6);
+}
+
+function metricLabel(metric) {
+  if (metric === "market_cap") return "market cap";
+  if (metric === "fdv") return "FDV";
+  return "price";
+}
+
+function formatMetricValue(metric, value) {
+  if (metric === "price") return `$${formatPrice(value)}`;
+  return compactUsd(value);
+}
+
+function getMarketMetricValue(market, metric) {
+  if (metric === "market_cap") return market.marketCap;
+  if (metric === "fdv") return market.fdv;
+  return market.price;
 }
 
 async function getAnsemPrice() {
@@ -98,6 +126,7 @@ async function getAnsemPrice() {
     pairUrl: best.url,
     liquidity: Number(best?.liquidity?.usd || 0),
     marketCap: Number(best?.marketCap || best?.fdv || 0),
+    fdv: Number(best?.fdv || best?.marketCap || 0),
     change24h: Number(best?.priceChange?.h24 || 0),
   };
 }
@@ -120,15 +149,21 @@ function parseCommand(text) {
   }
 
   const alert = clean.match(
-    /(?:alert|notify|ping|call)?\s*(?:me\s*)?(?:when\s*)?(?:it\s*)?(?:is\s*)?(above|over|breaks above|below|under|breaks below)\s+\$?([0-9]*\.?[0-9]+)/
+    /(?:alert|notify|ping|call)?\s*(?:me\s*)?(?:when\s*)?(?:it\s*)?(?:is\s*)?(?:(price|market cap|marketcap|mcap|mc|fully diluted valuation|fdv)\s*)?(above|over|breaks above|below|under|breaks below)\s+\$?([0-9]*\.?[0-9]+)\s*(k|m|mm|b|bn|thousand|million|billion)?(?:\s*(price|market cap|marketcap|mcap|mc|fully diluted valuation|fdv))?/
   );
 
   if (alert) {
-    const rawDirection = alert[1];
+    const rawMetric = alert[1] || alert[5] || "price";
+    const rawDirection = alert[2];
+    const targetValue = parseNumericTarget(alert[3], alert[4]);
+
+    if (!targetValue) return { type: "unknown" };
+
     return {
       type: "create_alert",
+      metric: parseAlertMetric(rawMetric),
       direction: rawDirection.includes("below") || rawDirection === "under" ? "below" : "above",
-      targetPrice: Number(alert[2]),
+      targetValue,
     };
   }
 
@@ -137,6 +172,15 @@ function parseCommand(text) {
   }
 
   return { type: "unknown" };
+}
+
+function parseAlertMetric(rawMetric) {
+  const clean = rawMetric.replace(/\s+/g, " ").trim().toLowerCase();
+  if (clean === "market cap" || clean === "marketcap" || clean === "mcap" || clean === "mc") {
+    return "market_cap";
+  }
+  if (clean === "fully diluted valuation" || clean === "fdv") return "fdv";
+  return "price";
 }
 
 async function reply(text, tweetId) {
@@ -199,12 +243,15 @@ async function handleMention(tweet, user, market) {
   }
 
   if (command.type === "create_alert") {
+    const currentValue = getMarketMetricValue(market, command.metric);
+
     const { data: existing, error: existingError } = await supabase
       .from("alerts")
       .select("id")
       .eq("x_user_id", user.id)
+      .eq("alert_metric", command.metric)
       .eq("direction", command.direction)
-      .eq("target_price", command.targetPrice)
+      .eq("target_price", command.targetValue)
       .eq("triggered", false)
       .maybeSingle();
 
@@ -213,8 +260,11 @@ async function handleMention(tweet, user, market) {
     if (existing) {
       return reply(
         `Alert already active for @${user.username}.\n\n` +
-          `$ANSEM ${command.direction} $${command.targetPrice}\n` +
-          `Current: $${formatPrice(market.price)}`,
+          `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+            command.metric,
+            command.targetValue
+          )}\n` +
+          `Current: ${formatMetricValue(command.metric, currentValue)}`,
         tweet.id
       );
     }
@@ -223,14 +273,18 @@ async function handleMention(tweet, user, market) {
       x_user_id: user.id,
       x_username: user.username,
       source_tweet_id: tweet.id,
+      alert_metric: command.metric,
       direction: command.direction,
-      target_price: command.targetPrice,
+      target_price: command.targetValue,
     });
 
     if (error?.code === "23505") {
       return reply(
         `Alert already active for @${user.username}.\n\n` +
-          `$ANSEM ${command.direction} $${command.targetPrice}`,
+          `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+            command.metric,
+            command.targetValue
+          )}`,
         tweet.id
       );
     }
@@ -239,8 +293,11 @@ async function handleMention(tweet, user, market) {
 
     return reply(
       `Alert set for @${user.username}.\n\n` +
-        `$ANSEM ${command.direction} $${command.targetPrice}\n` +
-        `Current: $${formatPrice(market.price)}\n\n` +
+        `$ANSEM ${metricLabel(command.metric)} ${command.direction} ${formatMetricValue(
+          command.metric,
+          command.targetValue
+        )}\n` +
+        `Current: ${formatMetricValue(command.metric, currentValue)}\n\n` +
         `The bull will call when the level hits.`,
       tweet.id
     );
@@ -263,7 +320,10 @@ async function handleMention(tweet, user, market) {
 
     const lines = alerts.map(
       (alert, index) =>
-        `${index + 1}. ${alert.direction} $${Number(alert.target_price)}`
+        `${index + 1}. ${metricLabel(alert.alert_metric || "price")} ${alert.direction} ${formatMetricValue(
+          alert.alert_metric || "price",
+          Number(alert.target_price)
+        )}`
     );
 
     return reply(
@@ -289,6 +349,8 @@ async function handleMention(tweet, user, market) {
       `@${BOT_USERNAME} price\n` +
       `@${BOT_USERNAME} alert above 0.12\n` +
       `@${BOT_USERNAME} alert below 0.08\n` +
+      `@${BOT_USERNAME} alert mcap above 10m\n` +
+      `@${BOT_USERNAME} alert fdv below 20m\n` +
       `@${BOT_USERNAME} alerts\n` +
       `@${BOT_USERNAME} cancel`,
     tweet.id
@@ -371,11 +433,13 @@ async function processTriggeredAlerts(market) {
   let triggered = 0;
 
   for (const alert of alerts) {
+    const metric = alert.alert_metric || "price";
     const target = Number(alert.target_price);
+    const currentValue = getMarketMetricValue(market, metric);
     const hit =
       alert.direction === "above"
-        ? market.price >= target
-        : market.price <= target;
+        ? currentValue >= target
+        : currentValue <= target;
 
     if (!hit) continue;
 
@@ -395,8 +459,8 @@ async function processTriggeredAlerts(market) {
         text:
           `HORN SIGNAL\n\n` +
           `@${alert.x_username} your $ANSEM alert hit.\n\n` +
-          `Target: ${alert.direction} $${target}\n` +
-          `Current: $${formatPrice(market.price)}\n\n` +
+          `Target: ${metricLabel(metric)} ${alert.direction} ${formatMetricValue(metric, target)}\n` +
+          `Current: ${formatMetricValue(metric, currentValue)}\n\n` +
           `The Black Bull moved.`,
         reply: {
           in_reply_to_tweet_id: alert.source_tweet_id,

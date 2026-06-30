@@ -24,6 +24,11 @@ Run it every 1 minute. The bot only posts the public pulse once per hour.
 @BlackBullPulse $ANSEM?
 @BlackBullPulse alert above 0.12
 @BlackBullPulse alert below 0.08
+@BlackBullPulse alert mcap above 10m
+@BlackBullPulse alert market cap below 8m
+@BlackBullPulse alert mc above 10m
+@BlackBullPulse alert fdv below 20m
+@BlackBullPulse alert fully diluted valuation above 25m
 @BlackBullPulse alerts
 @BlackBullPulse cancel
 ```
@@ -34,3 +39,4 @@ Run it every 1 minute. The bot only posts the public pulse once per hour.
 - Processed tweet IDs are stored to reduce duplicate replies on serverless retries.
 - Public price posts are hourly, not every minute.
 - A significant move pulse posts when `$ANSEM` rises at least 20% from the last stored signal baseline.
+- Alerts can target price, market cap, or FDV. Supported short forms include `mcap`, `mc`, and `fdv`.

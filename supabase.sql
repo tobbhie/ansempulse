@@ -21,6 +21,7 @@ create table if not exists alerts (
   x_user_id text not null,
   x_username text not null,
   source_tweet_id text not null,
+  alert_metric text not null default 'price',
   direction text not null check (direction in ('above', 'below')),
   target_price numeric not null,
   triggered boolean default false,
@@ -32,12 +33,19 @@ create table if not exists alerts (
 alter table alerts
 add column if not exists trigger_claimed_at timestamptz;
 
-create index if not exists alerts_active_idx
-on alerts (triggered, direction, target_price);
+alter table alerts
+add column if not exists alert_metric text not null default 'price';
+
+drop index if exists alerts_active_idx;
+
+create index alerts_active_idx
+on alerts (triggered, alert_metric, direction, target_price);
 
 create index if not exists alerts_user_active_idx
 on alerts (x_user_id, triggered, created_at desc);
 
-create unique index if not exists alerts_no_duplicate_active_idx
-on alerts (x_user_id, direction, target_price)
+drop index if exists alerts_no_duplicate_active_idx;
+
+create unique index alerts_no_duplicate_active_idx
+on alerts (x_user_id, alert_metric, direction, target_price)
 where triggered = false;
